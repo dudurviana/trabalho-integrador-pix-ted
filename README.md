@@ -635,7 +635,6 @@ display(classificacao_variaveis)
 
 ## Etapa 3 – Construção das Tabelas Estruturadas
 
-```python
 df_pix_estr = carregar_pix_estruturado(ARQUIVOS["pix"])
 df_ted_estr = pd.json_normalize(carregar_bruto(ARQUIVOS["ted"]))
 
@@ -648,6 +647,17 @@ for nome, df in (
     display(df.head(5))
 
 COLS_PIX = resolver_colunas(df_pix_estr, CFG["pix"], "PIX")
+
+# TED possui estrutura larga (uma coluna por meio de pagamento), sem coluna categórica de instrumento
+COLS_TED = {"mes": "AnoMes", "qtd": "quantidadeTED", "valor": "valorTED"}
+COL_INSTR, VALORES_TED = "colunas quantidadeTED/valorTED (formato largo)", ["TED"]
+
+faltam = [c for c in COLS_TED.values() if c not in df_ted_estr.columns]
+assert not faltam, f"colunas ausentes na TED: {faltam}; disponíveis: {list(df_ted_estr.columns)}"
+
+df_ted_sel = df_ted_estr[list(COLS_TED.values())].copy()
+print(f"Linhas da TED: {len(df_ted_sel):,}")
+display(df_ted_sel.head())
 
 # TED possui estrutura larga (uma coluna por meio de pagamento), sem coluna categórica de instrumento
 COLS_TED = {"mes": "AnoMes", "qtd": "quantidadeTED", "valor": "valorTED"}
