@@ -1,62 +1,104 @@
-# Trabalho Integrador – Pix e TED
+# Pipeline ETL: Pix vs. TED (Banco Central do Brasil)
 
-Etapa 0 – Configuração e funções auxiliares
+> Coleta, classificação, preparação e integração de dados públicos da API OData (Olinda) do Banco Central do Brasil para comparação histórica entre **Pix** e **TED**[cite: 1].
 
-import json, re, hashlib, unicodedata, zipfile, gzip, time
+## Visão Geral do Fluxo
+
+* **Etapa 0:** Configuração do ambiente, diretórios, parâmetros temporais e funções auxiliares de requisição/normalização[cite: 1].
+* **Etapa 1:** Aquisição das bases **Pix** (`EstatisticasTransacoesPix`) e **TED** (`MeiosdePagamentosMensalDA`) em formato bruto comprimido (`.json.gz`), com retomada incremental e controle de memória[cite: 1].
+* **Etapa 2:** Diagnóstico estrutural dos payloads JSON recebidos, classificação quanto à estrutura/origem e definição das variáveis-alvo[cite: 1].
+* **Etapa 3:** Construção das tabelas estruturadas e definição da chave de integração (`mes_referencia`)[cite: 1].
+* **Etapa 4:** Diagnóstico de qualidade **antes** do tratamento (completude, consistência, precisão e atualidade)[cite: 1].
+* **Etapa 5:** Aplicação de tratamentos, padronização de unidades e registro em log[cite: 1].
+* **Etapa 6:** Integração via `inner join` (`one_to_one`) e cálculo do ticket médio (`R$`)[cite: 1].
+* **Etapa 7:** Diagnóstico de qualidade **depois** do tratamento, comparativo antes × depois e discussão sobre ETL vs. ELT[cite: 1].
+* **Etapa 8:** Geração do gráfico comparativo (`grafico_pix_ted.png`), interpretação dos resultados e limitações[cite: 1].
+* **Etapa 9:** Exportação dos entregáveis em CSV, PNG e compactação em `entregaveis_n1.zip`[cite: 1].
+
+---
+
+## Etapa 0 – Configuração e Funções Auxiliares
+
+```python
+import gzip
+import hashlib
+import json
+import re
+import time
+import unicodedata
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 from IPython.display import display
 
+# Opções de exibição do pandas
 pd.set_option("display.max_columns", 50)
 pd.set_option("display.width", 180)
 pd.set_option("display.max_colwidth", 80)
-PIX_MES_PARADA = "202611"   # o download para ao chegar neste mês, sem baixá-lo (AAAAMM)
 
-# Pastas de trabalho (no Colab, /content)
+# Limite superior de coleta (formato AAAAMM): interrompe sem baixar o mês indicado
+PIX_MES_PARADA = "202611"
+
+# Diretórios de trabalho (compatível com Google Colab e execução local)
 BASE_DIR = Path("/content") if Path("/content").exists() else Path(".")
-RAW_DIR = BASE_DIR / "raw"        # dados brutos exatamente como recebidos
-OUT_DIR = BASE_DIR / "saidas"     # tabela final, gráfico, evidências
+RAW_DIR = BASE_DIR / "raw"     # Dados brutos exatamente como recebidos
+OUT_DIR = BASE_DIR / "saidas"  # Tabelas tratadas, gráficos e evidências
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Data/hora da coleta (fuso de Brasília) – ajustada para limitar até Novembro de 2026
+# Data/hora de referência da coleta (fuso horário de Brasília)
 TZ = ZoneInfo("America/Sao_Paulo")
 AGORA = datetime(2026, 11, 13, tzinfo=TZ)
 DATA_COLETA = AGORA.strftime("%Y-%m-%d %H:%M:%S %Z")
 CARIMBO = AGORA.strftime("%Y%m%d_%H%M%S")
 
-# Endpoints da API Olinda do Banco Central
-URL_PIX = "https://olinda.bcb.gov.br/olinda/servico/Pix_DadosAbertos/versao/v1/odata/EstatisticasTransacoesPix"
-URL_TED = "https://olinda.bcb.gov.br/olinda/servico/MPV_DadosAbertos/versao/v1/odata/MeiosdePagamentosMensalDA"
+# Endpoints da API Olinda do Banco Central do Brasil
+URL_PIX = (
+    "[https://olinda.bcb.gov.br/olinda/servico/Pix_DadosAbertos/](https://olinda.bcb.gov.br/olinda/servico/Pix_DadosAbertos/)"
+    "versao/v1/odata/EstatisticasTransacoesPix"
+)
+URL_TED = (
+    "[https://olinda.bcb.gov.br/olinda/servico/MPV_DadosAbertos/](https://olinda.bcb.gov.br/olinda/servico/MPV_DadosAbertos/)"
+    "versao/v1/odata/MeiosdePagamentosMensalDA"
+)
 
-# ⚠️ Só altere se a detecção automática (Etapa 3) escolher a coluna errada. None = detectar sozinho.
+# Sobrescrita manual opcional caso a detecção automática (Etapa 3) precise de ajuste
 CFG = {
     "pix": {"mes": None, "qtd": None, "valor": None},
-    "ted": {"mes": None, "qtd": None, "valor": None,
-            "col_instrumento": None, "valores_instrumento": None},
+    "ted": {
+        "mes": None,
+        "qtd": None,
+        "valor": None,
+        "col_instrumento": None,
+        "valores_instrumento": None,
+    },
 }
 
 PIX_SO_COLUNAS_ESSENCIAIS = False
-PIX_MES_INICIAL = "2020-11"      # lançamento do Pix
+PIX_MES_INICIAL = "2020-11"  # Início da operação do Pix
 
-# ⚠️ Multiplicadores para levar cada variável da unidade ORIGINAL até a unidade-base
+# Multiplicadores da unidade original para a unidade-base
 MULT_ORIGEM = {
     "pix": {"qtd": 1.0, "valor": 1.0},
     "ted": {"qtd": 1.0, "valor": 1.0},
 }
-     
 
-# ----------------------------- funções auxiliares (usadas em todas as etapas)
+PADROES = {
+    "mes": r"(ano_?mes|^data|database|periodo|competencia|^mes)",
+    "qtd": r"(quant|qtd|qtde)",
+    "valor": r"(^|_)(valor|vl|vlr|montante)",
+}
+
 
 def _get(url, timeout=90, tentativas=3):
-    # A URL é montada À MÃO: o requests codifica "$" como "%24" quando se usa params=, e o Olinda rejeita (HTTP 400).
+    """Executa GET montando a URL manualmente para evitar que '$' vire '%24' no OData."""
     ultimo = None
     for t in range(tentativas):
         try:
@@ -64,7 +106,7 @@ def _get(url, timeout=90, tentativas=3):
             if r.status_code == 200:
                 return r.json()
             ultimo = f"HTTP {r.status_code} em {url}\n{r.text[:600]}"
-            if r.status_code < 500:      # erro do cliente (400/404): repetir não adianta
+            if r.status_code < 500:
                 break
         except requests.RequestException as e:
             ultimo = f"{type(e).__name__}: {e}"
@@ -73,19 +115,16 @@ def _get(url, timeout=90, tentativas=3):
 
 
 def baixar_odata(url_base, extra="", page=10000, max_paginas=500):
-    # Baixa todos os registros de um recurso OData, paginando com 
-skip.
-    # url_base: endereço sem query. extra: parâmetros adicionais já formatados (ex.: "&@Database='202011'").
+    """Baixa registros de um endpoint OData paginando via $skip até esgotar ou repetir."""
     registros, ultimo_hash, contexto = [], None, None
     for p in range(max_paginas):
-        corpo = _get(f"{url_base}?format=json&
-top={page}&$skip={p * page}{extra}")
+        corpo = _get(f"{url_base}?format=json&top={page}&$skip={p * page}{extra}")
         contexto = corpo.get("@odata.context", contexto)
         lote = corpo.get("value", [])
         if not lote:
             break
         h = hashlib.md5(json.dumps(lote, sort_keys=True).encode()).hexdigest()
-        if h == ultimo_hash:      # o servidor ignorou $skip e repetiu a página
+        if h == ultimo_hash:
             break
         ultimo_hash = h
         registros.extend(lote)
@@ -95,7 +134,7 @@ top={page}&$skip={p * page}{extra}")
 
 
 def baixar_pix(select_cols=None):
-    # EstatisticasTransacoesPix é uma FUNÇÃO OData: exige Database=@Database (AAAAMM). Um request por mês.
+    """Consulta EstatisticasTransacoesPix mês a mês (AAAAMM)."""
     meses = pd.period_range(PIX_MES_INICIAL, AGORA.strftime("%Y-%m"), freq="M")
     base = f"{URL_PIX}(Database=@Database)"
     tudo, ctx, falhas, select = [], None, [], ""
@@ -104,24 +143,31 @@ def baixar_pix(select_cols=None):
         try:
             reg, c = baixar_odata(base, f"&@Database='{ym}'" + select)
         except RuntimeError as e:
-            falhas.append((ym, str(e).splitlines()[0])); print(f"  Pix {ym}: FALHOU -> {falhas[-1][1]}"); continue
+            falhas.append((ym, str(e).splitlines()[0]))
+            print(f"  Pix {ym}: FALHOU -> {falhas[-1][1]}")
+            continue
         ctx = ctx or c
         if reg and PIX_SO_COLUNAS_ESSENCIAIS and not select:
             cols = resolver_colunas(pd.json_normalize(reg[:200]), CFG["pix"], "PIX")
             chaves = [cols["mes"], cols["qtd"], cols["valor"]]
             select = "&$select=" + ",".join(chaves)
-            reg = [{k: r.get(k) for k in chaves} for r in reg]     # primeiro mês já veio completo: reduz igual aos demais
+            reg = [{k: r.get(k) for k in chaves} for r in reg]
         tudo.extend(reg)
         print(f"  Pix {ym}: {len(reg):>8,} linhas (acumulado: {len(tudo):,})")
     if not tudo:
-        raise RuntimeError(f"Nenhum mês do Pix retornou dados. Primeiras falhas: {falhas[:3]}")
+        raise RuntimeError(
+            f"Nenhum mês do Pix retornou dados. Primeiras falhas: {falhas[:3]}"
+        )
     if falhas:
-        print(f"⚠️ {len(falhas)} mês(es) falharam: {[f[0] for f in falhas]} (aparecerão como lacunas no diagnóstico)")
+        print(
+            f"⚠️ {len(falhas)} mês(es) falharam: {[f[0] for f in falhas]} "
+            "(aparecerão como lacunas no diagnóstico)"
+        )
     return tudo, ctx
 
 
 def salvar_bruto(registros, contexto, chave):
-    # Guarda o dado bruto (evidência do estado inicial), comprimido, com carimbo de data/hora.
+    """Salva o payload bruto em JSON comprimido (.json.gz) com carimbo de execução."""
     caminho = RAW_DIR / f"{chave}_bruto_{CARIMBO}.json.gz"
     with gzip.open(caminho, "wt", encoding="utf-8") as f:
         json.dump({"@odata.context": contexto, "value": registros}, f, ensure_ascii=False)
@@ -129,23 +175,25 @@ def salvar_bruto(registros, contexto, chave):
 
 
 def carregar_bruto(caminho):
+    """Lê a lista 'value' de um arquivo bruto .json.gz."""
     with gzip.open(caminho, "rt", encoding="utf-8") as f:
         return json.load(f)["value"]
 
 
 def ler_inicio_bruto(caminho, n=700):
+    """Lê os primeiros n caracteres de um arquivo bruto .json.gz."""
     with gzip.open(caminho, "rt", encoding="utf-8") as f:
         return f.read(n)
 
 
 def norm_nome(s):
-    # "Quantidade de Transações" -> "quantidade_de_transacoes"
+    """Normaliza strings para snake_case sem acentos."""
     s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
     return re.sub(r"[^0-9a-zA-Z]+", "_", s).strip("_").lower()
 
 
 def parse_mes(s):
-    # Converte AAAAMM, 'AAAA-MM', 'AAAA-MM-DD' ou datetime para o 1º dia do mês. Inválidos -> NaT.
+    """Converte competências (AAAAMM, AAAA-MM, datas ou datetime) para o 1º dia do mês."""
     if pd.api.types.is_datetime64_any_dtype(s):
         return s.dt.to_period("M").dt.to_timestamp()
     txt = s.astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
@@ -164,7 +212,7 @@ def parse_mes(s):
 
 
 def para_numero(s):
-    # Converte para float; aceita texto com vírgula decimal. Não convertíveis -> NaN.
+    """Converte séries numéricas ou strings com vírgula decimal para float."""
     if pd.api.types.is_numeric_dtype(s):
         return s.astype(float)
     t = s.astype("string").str.strip()
@@ -174,6 +222,7 @@ def para_numero(s):
 
 
 def casas_dec(num):
+    """Retorna o maior número de casas decimais significativas em uma série numérica."""
     num = num.dropna()
     if num.empty:
         return 0
@@ -181,13 +230,8 @@ def casas_dec(num):
     return int(dec.str.rstrip("0").str.len().max()) if len(dec) else 0
 
 
-PADROES = {
-    "mes":   r"(ano_?mes|^data|database|periodo|competencia|^mes)",
-    "qtd":   r"(quant|qtd|qtde)",
-    "valor": r"(^|_)(valor|vl|vlr|montante)",
-}
-
 def resolver_colunas(df, cfg, nome):
+    """Identifica colunas de mês, quantidade e valor com base em CFG ou regex."""
     out = {}
     for k, padrao in PADROES.items():
         if cfg.get(k):
@@ -200,5 +244,411 @@ def resolver_colunas(df, cfg, nome):
         print(f"[{nome}] {k:5s} -> {out[k]!r}{aviso}")
     faltando = [k for k, v in out.items() if v is None]
     if faltando:
-        raise ValueError(f"[{nome}] Não achei coluna para {faltando}. Colunas disponíveis: {list(df.columns)}. Preencha CFG na Etapa 0.")
+        raise ValueError(
+            f"[{nome}] Não achei coluna para {faltando}. "
+            f"Colunas disponíveis: {list(df.columns)}. Preencha CFG na Etapa 0."
+        )
     return out
+```
+
+---
+
+## Etapa 1 – Aquisição das Bases
+
+| Modalidade | Recurso / Endpoint OData | Conteúdo esperado |
+| :--- | :--- | :--- |
+| **Pix** | `Pix_DadosAbertos` / `EstatisticasTransacoesPix(Database=@Database)`[cite: 1] | Quantidade e valor de transações Pix liquidadas, por mês (`AAAAMM`)[cite: 1]. |
+| **TED** | `MPV_DadosAbertos` / `MeiosdePagamentosMensalDA`[cite: 1] | Estatísticas mensais de meios de pagamento (inclui TED, Pix, boletos, cheques etc.)[cite: 1]. |
+
+```python
+PIX_SO_COLUNAS_ESSENCIAIS = True
+PIX_MES_PARADA = "202611"  # Interrompe sem baixar este mês (AAAAMM)
+TOP_MAX = 1_000_000
+PIX_DIR = RAW_DIR / "pix_mensal"  # 1 arquivo .json.gz por mês (permite retomada)
+
+
+def _get(url, timeout=180, tentativas=2):
+    ultimo = None
+    for t in range(tentativas):
+        try:
+            r = requests.get(url, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+            ultimo = f"HTTP {r.status_code} em {url}\n{r.text[:800]}"
+            if r.status_code < 500:
+                break
+        except requests.RequestException as e:
+            ultimo = f"{type(e).__name__}: {e}"
+        time.sleep(3)
+    raise RuntimeError(ultimo)
+
+
+def baixar_odata(url_base, extra="", page=10000, max_paginas=500, paginar=True):
+    if paginar:
+        registros, ultimo_hash, contexto = [], None, None
+        try:
+            for p in range(max_paginas):
+                corpo = _get(f"{url_base}?format=json&top={page}&$skip={p * page}{extra}")
+                contexto = corpo.get("@odata.context", contexto)
+                lote = corpo.get("value", [])
+                if not lote:
+                    break
+                h = hashlib.md5(json.dumps(lote, sort_keys=True).encode()).hexdigest()
+                if h == ultimo_hash:
+                    break
+                ultimo_hash = h
+                registros.extend(lote)
+                if len(lote) < page:
+                    break
+            return registros, contexto
+        except RuntimeError as e:
+            print(
+                f"  ⚠️ paginação recusada pelo servidor ({str(e).splitlines()[0]}); "
+                "tentando pedido único sem $skip..."
+            )
+
+    corpo = _get(f"{url_base}?format=json&top={TOP_MAX}{extra}")
+    registros = corpo.get("value", [])
+    if len(registros) in (100, 1000, 5000, 10000, 50000, 100000):
+        print(
+            f"  ⚠️ {len(registros):,} linhas é um número 'redondo': "
+            "confira se o servidor não truncou o resultado."
+        )
+    return registros, corpo.get("@odata.context")
+
+
+def _salvar_atomico(caminho, registros, contexto):
+    tmp = caminho.with_suffix(".tmp")
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump({"@odata.context": contexto, "value": registros}, f, ensure_ascii=False)
+    tmp.replace(caminho)
+
+
+def baixar_pix(retomar=True):
+    PIX_DIR.mkdir(parents=True, exist_ok=True)
+    meses = pd.period_range(PIX_MES_INICIAL, AGORA.strftime("%Y-%m"), freq="M")
+    base = f"{URL_PIX}(Database=@Database)"
+    p = CFG["pix"]
+    chaves = (
+        [p["mes"], p["qtd"], p["valor"]]
+        if (p["mes"] and p["qtd"] and p["valor"])
+        else None
+    )
+    select = ("&$select=" + ",".join(chaves)) if chaves else None
+    ctx, amostra, falhas, seguidas = None, [], [], 0
+    novos, reaproveitados, n_total = [], [], 0
+
+    for m in meses:
+        ym = f"{m.year}{m.month:02d}"
+        if ym >= PIX_MES_PARADA:
+            print(f"  Parando em {ym} (PIX_MES_PARADA = {PIX_MES_PARADA}).")
+            break
+        arq = PIX_DIR / f"pix_{ym}.json.gz"
+        if retomar and arq.exists():
+            reg = carregar_bruto(arq)
+            n_total += len(reg)
+            reaproveitados.append(ym)
+            if not amostra:
+                amostra = reg[:2000]
+            print(f"  Pix {ym}: {len(reg):>9,} linhas (arquivo já existia; reaproveitado)")
+            del reg
+            continue
+
+        t0 = time.time()
+        try:
+            if chaves is None:
+                amo = _get(f"{base}?format=json&top=200&@Database='{ym}'", timeout=120)
+                if not amo.get("value"):
+                    print(f"  Pix {ym}: sem dados")
+                    continue
+                cols = resolver_colunas(pd.DataFrame(amo["value"]), CFG["pix"], "PIX")
+                chaves = [cols["mes"], cols["qtd"], cols["valor"]]
+                select = "&$select=" + ",".join(chaves)
+            try:
+                reg, c = baixar_odata(
+                    base, f"&@Database='{ym}'" + (select or ""), paginar=False
+                )
+            except RuntimeError:
+                if not select:
+                    raise
+                print("  ⚠️ $select recusado; baixando o mês completo e projetando as colunas")
+                select = ""
+                reg, c = baixar_odata(base, f"&@Database='{ym}'", paginar=False)
+            seguidas = 0
+        except RuntimeError as e:
+            falhas.append((ym, str(e)))
+            seguidas += 1
+            print(f"  Pix {ym}: FALHOU -> {str(e).splitlines()[0]}")
+            if seguidas >= 3 and not n_total:
+                raise RuntimeError(
+                    "Os 3 primeiros meses falharam. Resposta COMPLETA do servidor:\n"
+                    + falhas[0][1]
+                )
+            continue
+
+        if not select:
+            reg = [{k: r.get(k) for k in chaves} for r in reg]
+        ctx = ctx or c
+        if reg:
+            _salvar_atomico(arq, reg, c)
+            n_total += len(reg)
+            novos.append(ym)
+            if not amostra:
+                amostra = reg[:2000]
+        print(
+            f"  Pix {ym}: {len(reg):>9,} linhas em {time.time() - t0:.0f}s "
+            f"(acumulado: {n_total:,})"
+        )
+        del reg
+
+    if not n_total:
+        raise RuntimeError(
+            "Nenhum mês do Pix retornou dados. Primeira falha:\n"
+            + (falhas[0][1] if falhas else "sem erro HTTP (listas vazias)")
+        )
+    if falhas:
+        print(
+            f"⚠️ {len(falhas)} mês(es) falharam: {[f[0] for f in falhas]} "
+            "(aparecerão como lacunas no diagnóstico)"
+        )
+    info = {
+        "novos": novos,
+        "reaproveitados": reaproveitados,
+        "falhas": [f[0] for f in falhas],
+        "colunas": chaves,
+    }
+    return PIX_DIR, n_total, amostra, ctx, info
+
+
+def carregar_pix_estruturado(pasta):
+    """Mantém apenas os registros referentes ao próprio mês de cada arquivo."""
+    partes, lidas = [], 0
+    for arq in sorted(Path(pasta).glob("pix_*.json.gz")):
+        ym = arq.stem.replace(".json", "").split("_")[1]
+        d = pd.DataFrame(carregar_bruto(arq))
+        lidas += len(d)
+        if d.empty:
+            continue
+        col = next(c for c in d.columns if re.search(r"anomes|database|^mes", norm_nome(c)))
+        partes.append(d[d[col].astype(str).str.strip() == ym])
+        del d
+    df = pd.concat(partes, ignore_index=True)
+    print(f"Pix: {lidas:,} linhas lidas dos arquivos -> {len(df):,} mantidas (só o mês de cada arquivo)")
+    if len(df) < lidas:
+        print("⚠️ A API devolve do mês pedido em diante: as linhas repetidas foram descartadas.")
+    print(f"memória ~ {df.memory_usage(deep=True).sum() / 1e9:.2f} GB")
+    return df
+
+
+def ler_inicio_bruto(caminho, n=700):
+    caminho = Path(caminho)
+    if caminho.is_dir():
+        caminho = sorted(caminho.glob("pix_*.json.gz"))[0]
+    with gzip.open(caminho, "rt", encoding="utf-8") as f:
+        return f.read(n)
+
+
+def _parse_mes_unicos(s):
+    txt = s.astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
+    out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    m6 = txt.str.fullmatch(r"\d{6}").fillna(False).astype(bool)
+    if m6.any():
+        out[m6] = pd.to_datetime(txt[m6], format="%Y%m", errors="coerce")
+    resto = (~m6 & txt.notna()).to_numpy()
+    if resto.any():
+        try:
+            conv = pd.to_datetime(txt[resto], errors="coerce", format="mixed")
+        except (ValueError, TypeError):
+            conv = pd.to_datetime(txt[resto], errors="coerce")
+        out[resto] = conv
+    return out.dt.to_period("M").dt.to_timestamp()
+
+
+def parse_mes(s):
+    """Fatoriza valores distintos antes do parse para economizar memória."""
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s.dt.to_period("M").dt.to_timestamp()
+    codigos, unicos = pd.factorize(s)
+    parsed = _parse_mes_unicos(pd.Series(unicos)).to_numpy()
+    if len(parsed) == 0:
+        return pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    out = pd.Series(parsed[np.where(codigos < 0, 0, codigos)], index=s.index)
+    out[codigos < 0] = pd.NaT
+    return out
+
+
+def casas_dec(num):
+    num = num.dropna()
+    if num.empty:
+        return 0
+    if len(num) > 200_000:
+        num = num.sample(200_000, random_state=0)
+    dec = num.astype(str).str.extract(r"\.(\d+)$")[0].dropna()
+    return int(dec.str.rstrip("0").str.len().max()) if len(dec) else 0
+
+
+def baixar_ted():
+    base = f"{URL_TED}(AnoMes=@AnoMes)"
+
+    def pedir(ym):
+        corpo = _get(f"{base}?format=json&top={TOP_MAX}&@AnoMes='{ym}'", timeout=300)
+        return corpo.get("value", []), corpo.get("@odata.context")
+
+    ini = PIX_MES_INICIAL.replace("-", "")
+    print(f"  TED: pedindo AnoMes={ini} (o servidor é lento, aguarde)...")
+    reg, ctx = pedir(ini)
+    meses = sorted({str(r["AnoMes"]) for r in reg})
+    print(f"  TED: {len(reg):,} linhas; {len(meses)} mês(es) distintos: {meses[:1]} ... {meses[-1:]}")
+    if len(meses) > 1 or not reg:
+        return reg, ctx
+
+    tudo = list(reg)
+    for m in pd.period_range(PIX_MES_INICIAL, AGORA.strftime("%Y-%m"), freq="M")[1:]:
+        ym = f"{m.year}{m.month:02d}"
+        if ym >= PIX_MES_PARADA:
+            break
+        try:
+            r, _ = pedir(ym)
+        except RuntimeError as e:
+            print(f"  TED {ym}: FALHOU -> {str(e).splitlines()[0]}")
+            continue
+        tudo.extend(r)
+    return tudo, ctx
+
+
+FONTES = {
+    "pix": {
+        "nome": "Estatísticas de transações Pix (EstatisticasTransacoesPix)",
+        "origem": "Banco Central do Brasil – Portal de Dados Abertos / API Olinda (Pix_DadosAbertos)",
+        "url": URL_PIX + "(Database=@Database)  [1 requisição por mês, AAAAMM]",
+        "pagina_catalogo": "[https://dadosabertos.bcb.gov.br/dataset/pix](https://dadosabertos.bcb.gov.br/dataset/pix)",
+    },
+    "ted": {
+        "nome": "Meios de Pagamentos Mensais (MeiosdePagamentosMensalDA)",
+        "origem": "Banco Central do Brasil – Portal de Dados Abertos / API Olinda (MPV_DadosAbertos)",
+        "url": URL_TED,
+        "pagina_catalogo": "[https://dadosabertos.bcb.gov.br/dataset/estatisticas-meios-pagamentos](https://dadosabertos.bcb.gov.br/dataset/estatisticas-meios-pagamentos)",
+    },
+}
+
+ARQUIVOS, REGISTROS_BRUTOS, N_REGISTROS, linhas_registro = {}, {}, {}, []
+for chave, f in FONTES.items():
+    print(f"\nBaixando {chave.upper()} ...")
+    obs = ""
+    if chave == "pix":
+        caminho, n, amostra, ctx, info = baixar_pix()
+        obs = (
+            f"1 arquivo por mês em {caminho}; baixados agora: {len(info['novos'])}; "
+            f"reaproveitados: {len(info['reaproveitados'])}; meses com falha: {info['falhas']}; "
+            f"colunas baixadas ($select): {info['colunas']}"
+        )
+    else:
+        amostra, ctx = baixar_ted()
+        n = len(amostra)
+        if not n:
+            raise RuntimeError("A API da TED não devolveu registros.")
+        caminho = salvar_bruto(amostra, ctx, chave)
+
+    ARQUIVOS[chave], REGISTROS_BRUTOS[chave], N_REGISTROS[chave] = caminho, amostra, n
+    linhas_registro.append({
+        "base": f["nome"],
+        "origem": f["origem"],
+        "url_api": f["url"],
+        "catalogo": f["pagina_catalogo"],
+        "formato_obtido": "JSON (OData/Olinda, via requests)",
+        "data_coleta": DATA_COLETA,
+        "arquivo_bruto": str(caminho),
+        "n_registros": n,
+        "campos_recebidos": ", ".join(amostra[0].keys()),
+        "observacoes": obs,
+    })
+    print(f"[{chave.upper()}] {n:,} registros | bruto em {caminho}")
+
+registro_aquisicao = pd.DataFrame(linhas_registro)
+display(registro_aquisicao.T)
+```
+
+---
+
+## Etapa 2 – Classificação dos Dados
+
+```python
+def evidencia_estrutura(chave):
+    reg = REGISTROS_BRUTOS[chave]
+    chaves_1 = set(reg[0].keys())
+    return {
+        "base": chave.upper(),
+        "tem_envelope_de_metadados (@odata.context)": "@odata.context" in ler_inicio_bruto(ARQUIVOS[chave], 2000),
+        "registros": len(reg),
+        "esquema_uniforme (todos com as mesmas chaves)": all(set(r.keys()) == chaves_1 for r in reg),
+        "campos_aninhados (dict/list dentro do registro)": any(
+            isinstance(v, (dict, list)) for r in reg[:2000] for v in r.values()
+        ),
+        "n_campos": len(chaves_1),
+    }
+
+
+display(pd.DataFrame([evidencia_estrutura(c) for c in FONTES]).set_index("base").T)
+
+for c in FONTES:
+    print(f"\n--- Primeiros 700 caracteres do arquivo bruto de {c.upper()} ---")
+    print(ler_inicio_bruto(ARQUIVOS[c], 700))
+```
+
+* **Estrutura:** Os dados chegam em JSON com envelope `@odata.context` (**semiestruturado** na chegada), mas possuem esquema uniforme e plano sem aninhamento (**tabular na essência**)[cite: 1].
+* **Origem:** **Externa** (Banco Central do Brasil), **pública** e **aberta** (Portal de Dados Abertos / API Olinda)[cite: 1].
+
+```python
+classificacao_variaveis = pd.DataFrame(
+    [
+        [
+            "mes_referencia",
+            "Competência mensal (AAAAMM)",
+            "Temporal / Qualitativa ordinal (ou discreta conforme critério)",
+            "Chave de integração entre Pix e TED",
+        ],
+        [
+            "modalidade (Pix/TED)",
+            "Instrumento de pagamento",
+            "Qualitativa nominal",
+            "Identifica a modalidade analisada",
+        ],
+        [
+            "quantidade",
+            "Volume / contagem de transações",
+            "Quantitativa discreta",
+            "Padronizada em milhões de transações",
+        ],
+        [
+            "valor",
+            "Montante financeiro movimentado",
+            "Quantitativa contínua",
+            "Padronizada em R$ bilhões",
+        ],
+    ],
+    columns=["variavel", "o_que_representa", "classificacao", "observacao"],
+)
+display(classificacao_variaveis)
+```
+
+---
+
+## Etapa 3 – Construção das Tabelas Estruturadas
+
+```python
+df_pix_estr = carregar_pix_estruturado(ARQUIVOS["pix"])
+df_ted_estr = pd.json_normalize(carregar_bruto(ARQUIVOS["ted"]))
+
+for nome, df in (
+    ("PIX", df_pix_estr),
+    ("TED (base completa de meios de pagamento)", df_ted_estr),
+):
+    print(f"\n===== {nome}: {df.shape[0]:,} linhas x {df.shape[1]} colunas =====")
+    display(df.dtypes.to_frame("dtype_recebido").T)
+    display(df.head(5))
+
+COLS_PIX = resolver_colunas(df_pix_estr, CFG["pix"], "PIX")
+
+# TED possui estrutura larga (uma coluna por meio de pagamento), sem coluna categórica de instrumento
+COLS_TED = {"mes": "AnoMes", "qtd": "quantidadeTED", "valor": "valorTED"}
+COL_INSTR, VALORES_TED = "colunas quantidadeTED/valorTED (formato largo
