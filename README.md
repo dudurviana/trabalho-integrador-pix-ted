@@ -1163,3 +1163,54 @@ plt.show()
 
 ///COLS_TED = {"mes": "AnoMes", "qtd": "quantidadeTED", "valor": "valorTED"}
 COL_INSTR, VALORES_TED = "colunas quantidadeTED/valorTED (formato largo
+
+## Etapa 9 – Saídas e Entregáveis
+
+```python
+final_out = final.copy()
+final_out["mes_referencia"] = final_out["mes_referencia"].dt.strftime("%Y-%m-%d")
+final_out.to_csv(OUT_DIR / "tabela_final_pix_ted.csv", index=False, encoding="utf-8")
+
+registro_aquisicao.to_csv(OUT_DIR / "registro_aquisicao.csv", index=False, encoding="utf-8")
+registro_variaveis.to_csv(OUT_DIR / "registro_variaveis.csv", index=False, encoding="utf-8")
+classificacao_variaveis.to_csv(OUT_DIR / "classificacao_variaveis.csv", index=False, encoding="utf-8")
+pd.concat([diag_pix_antes, diag_ted_antes]).to_csv(
+    OUT_DIR / "diagnostico_antes.csv", index=False, encoding="utf-8"
+)
+pd.concat([diag_pix_depois, diag_ted_depois, diag_final]).to_csv(
+    OUT_DIR / "diagnostico_depois.csv", index=False, encoding="utf-8"
+)
+pd.concat([comp_pix, comp_ted]).to_csv(
+    OUT_DIR / "comparativo_antes_depois.csv", index=False, encoding="utf-8"
+)
+log_tratamentos.to_csv(OUT_DIR / "log_tratamentos.csv", index=False, encoding="utf-8")
+
+zip_path = BASE_DIR / "entregaveis_n1.zip"
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+    for p in list(OUT_DIR.glob("*")) + list(RAW_DIR.glob("*")):
+        z.write(p, arcname=f"{p.parent.name}/{p.name}")
+
+print("Arquivos gerados:")
+for p in sorted(OUT_DIR.glob("*")):
+    print(" -", p)
+
+print("\nPacote completo:", zip_path)
+
+try:
+    from google.colab import files
+    files.download(str(zip_path))
+except Exception:
+    pass
+```
+
+### Arquivos Gerados em `/content/saidas` e Pacote Final
+* `classificacao_variaveis.csv`[cite: 1]
+* `comparativo_antes_depois.csv`[cite: 1]
+* `diagnostico_antes.csv`[cite: 1]
+* `diagnostico_depois.csv`[cite: 1]
+* `grafico_pix_ted.png`[cite: 1]
+* `log_tratamentos.csv`[cite: 1]
+* `registro_aquisicao.csv`[cite: 1]
+* `registro_variaveis.csv`[cite: 1]
+* `tabela_final_pix_ted.csv`[cite: 1]
+* Pacote compactado: `/content/entregaveis_n1.zip`[cite: 1]
