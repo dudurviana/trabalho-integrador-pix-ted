@@ -631,10 +631,9 @@ classificacao_variaveis = pd.DataFrame(
 display(classificacao_variaveis)
 ```
 
----
-
 ## Etapa 3 – Construção das Tabelas Estruturadas
 
+```python
 df_pix_estr = carregar_pix_estruturado(ARQUIVOS["pix"])
 df_ted_estr = pd.json_normalize(carregar_bruto(ARQUIVOS["ted"]))
 
@@ -658,7 +657,344 @@ assert not faltam, f"colunas ausentes na TED: {faltam}; disponíveis: {list(df_t
 df_ted_sel = df_ted_estr[list(COLS_TED.values())].copy()
 print(f"Linhas da TED: {len(df_ted_sel):,}")
 display(df_ted_sel.head())
+```
 
-# TED possui estrutura larga (uma coluna por meio de pagamento), sem coluna categórica de instrumento
+* **Chave de integração:** `mes_referencia` (1º dia do mês, tipo data), compartilhada pelas duas bases com granularidade mensal e agregada antes do `inner join` para garantir relação `1:1` no maior intervalo comum.
+
+---
+
+## Etapa 4 – Diagnóstico de Qualidade ANTES do Tratamento
+
+```python
+def diagnosticar(df, base, col_mes, cols_num, cols_dim=(), fase="", rotulos=None):
+    """Avalia completude, consistência, precisão e atualidade de uma tabela."""
+    rotulos = rotulos or {}
+    rot = lambda c: rotulos.get(c, c)
+    linhas = []
+
+    def add(dim, ind, valor, evid=""):
+        linhas.append({
+            "base": base,
+            "fase": fase,
+            "dimensao": dim,
+            "indicador": ind,
+            "valor": valor,
+            "evidencia": evid,
+        })
+
+    n = len(df)
+    mes = parse_mes(df[col_mes])
+    validos = mes.dropna()
+
+    # Completude
+    add("Completude", "Linhas", n)
+    nulos = df.isna().sum()
+    add(
+        "Completude",
+        "Células ausentes",
+        int(nulos.sum()),
+        "; ".join(f"{c}: {v}" for c, v in nulos.items() if v > 0) or "nenhuma",
+    )
+    add(
+        "Completude",
+        "Linhas 100% preenchidas (%)",
+        round(float(df.notna().all(axis=1).mean() * 100), 2) if n else np.nan,
+    )
+    if len(validos):
+        esperado = pd.period_range(validos.min(), validos.max(), freq="M")
+        presentes = set(validos.dt.to_period("M"))
+        faltam = [str(p) for p in esperado if p not in presentes]
+        add(
+            "Completude",
+            "Meses ausentes dentro do intervalo",
+            len(faltam),
+            (", ".join(faltam[:12]) + (" ..." if len(faltam) > 12 else ""))
+            if faltam
+            else "nenhum",
+        )
+    else:
+        add("Completude", "Meses ausentes dentro do intervalo", np.nan, "sem datas válidas")
+
+    # Consistência
+    add("Consistência", "Tipo armazenado da coluna de data", str(df[col_mes].dtype))
+    add(
+        "Consistência",
+        "Datas não interpretáveis",
+        int((mes.isna() & df[col_mes].notna()).sum()),
+    )
+    for c in cols_num:
+        num = para_numero(df[c])
+        add("Consistência", f"{rot(c)}: tipo armazenado", str(df[c].dtype))
+        add(
+            "Consistência",
+            f"{rot(c)}: valores não numéricos",
+            int((num.isna() & df[c].notna()).sum()),
+        )
+        add("Consistência", f"{rot(c)}: valores negativos", int((num < 0).sum()))
+        add("Consistência", f"{rot(c)}: valores zero", int((num == 0).sum()))
+    add("Consistência", "Linhas duplicadas (exatas)", int(df.duplicated().sum()))
+    chave = [col_mes, *cols_dim]
+    add(
+        "Consistência",
+        "Duplicidade na chave (mês + dimensões)",
+        int(df.duplicated(subset=chave).sum()),
+        "chave: " + ", ".join(chave),
+    )
+
+    # Precisão
+    for c in cols_num:
+        num = para_numero(df[c])
+        add(
+            "Precisão",
+            f"{rot(c)}: casas decimais (máx.)",
+            casas_dec(num),
+            "após a mudança de unidade o nº de casas deixa de ser comparável"
+            if fase == "depois"
+            else "",
+        )
+        serie = (
+            pd.DataFrame({"m": mes, "v": num})
+            .dropna(subset=["m"])
+            .groupby("m")["v"]
+            .sum(min_count=1)
+            .sort_index()
+        )
+        var = serie.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+        if len(var) > 3 and var.std() > 0:
+            z = (var - var.mean()) / var.std()
+            atip = var[z.abs() > 3]
+            add(
+                "Precisão",
+                f"{rot(c)}: variações mensais atípicas (|z|>3)",
+                len(atip),
+                ", ".join(str(i.to_period("M")) for i in atip.index[:8]) or "nenhuma",
+            )
+        else:
+            add(
+                "Precisão",
+                f"{rot(c)}: variações mensais atípicas (|z|>3)",
+                np.nan,
+                "série curta demais",
+            )
+
+    # Atualidade
+    if len(validos):
+        ult, prim = validos.max(), validos.min()
+        hoje = pd.Period(AGORA.strftime("%Y-%m"), freq="M")
+        add("Atualidade", "Primeiro mês da série", str(prim.to_period("M")))
+        add("Atualidade", "Último mês da série", str(ult.to_period("M")))
+        add(
+            "Atualidade",
+            "Defasagem do último mês até hoje (meses)",
+            (hoje - ult.to_period("M")).n,
+            f"coleta em {DATA_COLETA}",
+        )
+    return pd.DataFrame(linhas)
+
+
+def colunas_dim(df, cols):
+    return [c for c in df.columns if c not in (cols["mes"], cols["qtd"], cols["valor"])]
+
+
+diag_pix_antes = diagnosticar(
+    df_pix_estr,
+    "Pix",
+    COLS_PIX["mes"],
+    [COLS_PIX["qtd"], COLS_PIX["valor"]],
+    colunas_dim(df_pix_estr, COLS_PIX),
+    fase="antes",
+    rotulos={COLS_PIX["qtd"]: "quantidade", COLS_PIX["valor"]: "valor"},
+)
+
+diag_ted_antes = diagnosticar(
+    df_ted_sel,
+    "TED",
+    COLS_TED["mes"],
+    [COLS_TED["qtd"], COLS_TED["valor"]],
+    colunas_dim(df_ted_sel, COLS_TED),
+    fase="antes",
+    rotulos={COLS_TED["qtd"]: "quantidade", COLS_TED["valor"]: "valor"},
+)
+
+print("===== PIX – antes do tratamento =====")
+display(diag_pix_antes.drop(columns=["base", "fase"]))
+
+print("===== TED – antes do tratamento =====")
+display(diag_ted_antes.drop(columns=["base", "fase"]))
+```
+
+---
+
+## Etapa 5 – Tratamentos Aplicados e Justificativas
+
+```python
+def tratar(df_raw, cols, base, prefixo, mult_qtd, mult_valor, remover_duplicatas=True):
+    """Aplica limpeza, tipagem, agregação mensal e padronização de unidades."""
+    log = []
+
+    def reg(trat, motivo, antes, depois, afetadas=""):
+        log.append({
+            "base": base,
+            "tratamento": trat,
+            "motivo": motivo,
+            "linhas_antes": antes,
+            "linhas_depois": depois,
+            "afetadas": afetadas,
+        })
+
+    d = df_raw.copy()
+
+    # 1) Duplicatas exatas
+    n0 = len(d)
+    if remover_duplicatas:
+        d = d.drop_duplicates()
+        reg(
+            "Remoção de duplicatas exatas",
+            "Evitar dupla contagem de uma mesma observação",
+            n0,
+            len(d),
+            n0 - len(d),
+        )
+    else:
+        reg(
+            "Duplicatas exatas NÃO removidas",
+            "Só 3 colunas foram baixadas: linhas iguais podem ser categorias diferentes",
+            n0,
+            n0,
+            0,
+        )
+
+    # 2) Seleção e padronização de nomes
+    outras = [c for c in d.columns if c not in (cols["mes"], cols["qtd"], cols["valor"])]
+    d = d[[cols["mes"], cols["qtd"], cols["valor"]]].rename(
+        columns={
+            cols["mes"]: "mes_referencia",
+            cols["qtd"]: "quantidade",
+            cols["valor"]: "valor",
+        }
+    )
+    reg(
+        "Seleção e padronização de nomes de colunas",
+        "Manter só as variáveis da comparação; nomes em snake_case, sem acento",
+        len(d),
+        len(d),
+        f"dimensões que serão agregadas: {outras or 'nenhuma'}",
+    )
+
+    # 3) Data -> datetime (1º dia do mês)
+    antes_na = int(d["mes_referencia"].isna().sum())
+    d["mes_referencia"] = parse_mes(d["mes_referencia"])
+    reg(
+        "Conversão da data para datetime (1º dia do mês)",
+        "Permitir ordenar no tempo e integrar pela chave",
+        len(d),
+        len(d),
+        int(d["mes_referencia"].isna().sum()) - antes_na,
+    )
+
+    # 4) Numéricos -> float
+    coerc = 0
+    for c in ("quantidade", "valor"):
+        nulos_antes = int(d[c].isna().sum())
+        d[c] = para_numero(d[c])
+        coerc += int(d[c].isna().sum()) - nulos_antes
+    reg(
+        "Conversão de quantidade e valor para float",
+        "Garantir tipo numérico para cálculo e gráfico",
+        len(d),
+        len(d),
+        coerc,
+    )
+
+    # 5) Linhas sem mês válido
+    n0 = len(d)
+    d = d.dropna(subset=["mes_referencia"])
+    reg(
+        "Remoção de linhas sem mês válido",
+        "Sem data não é possível posicionar a observação na série",
+        n0,
+        len(d),
+        n0 - len(d),
+    )
+
+    # 6) Ausentes e negativos (sinalizados, não imputados)
+    reg(
+        "Valores ausentes mantidos (sem imputação)",
+        "Imputar dados financeiros criaria informação inexistente",
+        len(d),
+        len(d),
+        int(d[["quantidade", "valor"]].isna().sum().sum()),
+    )
+    reg(
+        "Valores negativos sinalizados",
+        "Quantidade/valor negativos seriam inconsistentes; apenas contados",
+        len(d),
+        len(d),
+        int((d[["quantidade", "valor"]] < 0).sum().sum()),
+    )
+
+    # 7) Agregação mensal
+    por_mes = int(d.groupby("mes_referencia").size().max()) if len(d) else 0
+    n0 = len(d)
+    soma = d.groupby("mes_referencia")[["quantidade", "valor"]].sum(min_count=1)
+    parcial = d[["quantidade", "valor"]].isna().groupby(d["mes_referencia"]).any()
+    soma = soma.mask(parcial)
+    d = soma.reset_index()
+    reg(
+        "Agregação mensal (soma) / reamostragem",
+        "Uma linha por mês, mesma granularidade nas duas bases",
+        n0,
+        len(d),
+        f"máx. de linhas por mês antes: {por_mes}",
+    )
+    reg(
+        "Meses com componente ausente viram NaN",
+        "Somar só parte das categorias subestimaria o mês sem aviso",
+        len(d),
+        len(d),
+        int(parcial.to_numpy().sum()),
+    )
+    if por_mes > 1:
+        print(
+            f"⚠️ [{base}] havia até {por_mes} linhas por mês e elas foram SOMADAS. "
+            "Confirme que não existem linhas de total misturadas às de detalhe."
+        )
+
+    # 8) Padronização de unidades
+    d[f"{prefixo}_quantidade_mi"] = d["quantidade"] * mult_qtd / 1e6
+    d[f"{prefixo}_valor_bi"] = d["valor"] * mult_valor / 1e9
+    d = d.drop(columns=["quantidade", "valor"]).sort_values("mes_referencia").reset_index(drop=True)
+    reg(
+        "Padronização de unidades",
+        "Quantidade em milhões de transações; valor em R$ bilhões",
+        len(d),
+        len(d),
+        f"multiplicadores de origem: qtd={mult_qtd:g}, valor={mult_valor:g}",
+    )
+    return d, pd.DataFrame(log)
+
+
+pix_trat, log_pix = tratar(
+    df_pix_estr,
+    COLS_PIX,
+    "Pix",
+    "pix",
+    MULT_ORIGEM["pix"]["qtd"],
+    MULT_ORIGEM["pix"]["valor"],
+    remover_duplicatas=not PIX_SO_COLUNAS_ESSENCIAIS,
+)
+
+ted_trat, log_ted = tratar(
+    df_ted_sel,
+    COLS_TED,
+    "TED",
+    "ted",
+    MULT_ORIGEM["ted"]["qtd"],
+    MULT_ORIGEM["ted"]["valor"],
+)
+
+log_tratamentos = pd.concat([log_pix, log_ted], ignore_index=True)
+display(log_tratamentos)
+```
 COLS_TED = {"mes": "AnoMes", "qtd": "quantidadeTED", "valor": "valorTED"}
 COL_INSTR, VALORES_TED = "colunas quantidadeTED/valorTED (formato largo
