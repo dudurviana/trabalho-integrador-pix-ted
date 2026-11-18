@@ -1166,10 +1166,34 @@ fig.savefig(OUT_DIR / "grafico_pix_ted.png", dpi=200, bbox_inches="tight")
 plt.show()
 ```
 
-### Interpretação e Limitações
-* **Quantidade:** O Pix cresce rapidamente desde o lançamento (`11/2020`) e amplia sua vantagem sobre a TED ao longo da série, atingindo cerca de `7.169,72` milhões de transações em `09/2026`.
-* **Valor e ticket médio:** Comparam-se `pix_valor_bi` e `ted_valor_bi` em conjunto com `pix_ticket_medio_rs` e `ted_ticket_medio_rs` para observar o perfil de uso de cada modalidade (conferindo a unidade original da TED no dicionário do BCB antes da redação final).
-* **Limitações:** Fontes e metodologias distintas, possível não inclusão de Pix liquidados internamente sem envio ao SPI, recorte da coluna de TED, valores nominais sem correção inflacionária, criação de novos usos pelo Pix e efeito visual da escala logarítmica.
+### Interpretação
+
+**Guia para análise com base nos dados consolidados:**
+
+1. **Quantidade:** Em qual momento o Pix supera a TED? Qual é a proporção Pix/TED no encerramento da série?
+2. **Valor:** O Pix iguala ou supera a TED em volume financeiro? Confronte `pix_valor_bi` e `ted_valor_bi` nos meses finais.
+3. **Ticket médio:** Analise `pix_ticket_medio_rs` frente a `ted_ticket_medio_rs` — o que esses valores indicam sobre o padrão de uso de cada meio (pagamentos cotidianos de menor porte versus movimentações mais elevadas)?
+4. **Tendência:** O volume da TED recua em números absolutos ou apenas perde espaço relativo?
+
+---
+
+#### Respostas
+
+1. **Quantidade.** Quando começou a operar (`11/2020`), a TED superava com folga o Pix: por volta de 192 milhões de operações frente a 30 milhões do Pix. O Pix toma a dianteira já em janeiro de 2021 (170 milhões contra 119 milhões) e amplia a vantagem mês a mês. Em setembro de 2026, o Pix alcança aproximadamente 7,17 bilhões de transações e a TED cerca de 61 milhões, deixando a proporção Pix/TED em torno de 117 para 1.
+2. **Valor.** Nesse quesito, o cenário muda. Em setembro de 2026, o Pix movimenta perto de R$ 4,13 trilhões, com relação Pix/TED próxima de 0,78. Nos registros observados, o Pix encosta na TED, sem chegar a ultrapassá-la — para concluir que isso nunca ocorreu em toda a janela analisada, vale verificar a tabela completa dos quatro pontos.
+3. **Ticket médio.** O contraste é marcante e segue direções opostas. O Pix recuou de algo em torno de R$ 450 (em `09/2026`), enquanto a TED avançou para perto de R$ 67 mil. No encerramento (`09/2026`), o ticket médio da TED equivale a cerca de 150 vezes o do Pix. Esse comportamento sugere que o Pix ganhou espaço em transferências frequentes de menor quantia, ao passo que a TED passou a concentrar operações mais vultosas — trata-se de uma leitura indicativa dos dados, e não de comprovação definitiva.
+4. **Tendência da TED.** Em quantidade absoluta, a TED diminuiu: saiu de aproximadamente 192 milhões (pico em `11/2020`) para cerca de 61 milhões, queda próxima de 68%. Já o montante nominal cresceu em torno de 61%, alcançando R$ 4,13 trilhões. Sua fatia no total de operações (`TED + Pix`) despencou de cerca de 87% para algo em torno de 0,9%. Em resumo, perdeu volume e participação de mercado, mas manteve relevância em valores maiores.
+
+---
+
+### Limitações da Comparação (Ponto de Partida)
+
+* **Origem e critérios distintos:** Pix e TED provêm de bases diferentes do Banco Central, cada qual com suas próprias regras de apuração.
+* **Escopo do Pix:** Segundo a documentação do BC, as estatísticas não abrangem operações liquidadas internamente no próprio participante sem passagem pelo SPI, o que pode gerar subestimação.
+* **Escopo da TED:** É preciso checar se a seleção isola estritamente a TED (sem misturar DOC ou TEC) e qual é a abrangência da fonte (`CIP-SITRAF`/`STR`).
+* **Valores nominais:** Não há ajuste inflacionário, de modo que os números em reais reúnem expansão real e variação de preços.
+* **Substituição parcial:** O Pix abriu frentes de uso diário e de baixo valor que não existiam na TED, logo a queda desta não representa apenas migração direta.
+* **Efeito da escala:** O eixo logarítmico na quantidade ajuda a visualizar séries de ordens distintas, porém destaca visualmente a TED em relação à escala linear.
 
 
 
