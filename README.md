@@ -1254,3 +1254,10 @@ except Exception:
 * `registro_variaveis.csv`[cite: 1]
 * `tabela_final_pix_ted.csv`[cite: 1]
 * Pacote compactado: `/content/entregaveis_n1.zip`[cite: 1]
+
+
+
+Referências
+BANCO CENTRAL DO BRASIL. Portal de Dados Abertos – Pix (API EstatisticasTransacoesPix). https://dadosabertos.bcb.gov.br/dataset/pix
+BANCO CENTRAL DO BRASIL. Portal de Dados Abertos – Estatísticas de Meios de Pagamentos (recurso MeiosdePagamentosMensalDA). https://dadosabertos.bcb.gov.br/dataset/estatisticas-meios-pagamentos
+Complete com: documentação do pandas, matplotlib e requests, material da disciplina e quaisquer outras fontes que você usar (com data de acesso).
