@@ -1,28 +1,3 @@
-```python
-import pandas as pd
-
-df = pd.read_csv('tabela_final_pix_ted.csv')
-
-# Build a markdown table with all 71 rows and all columns exactly as in the file
-cols = df.columns.tolist()
-header = "| " + " | ".join(cols) + " |"
-sep = "| " + " | ".join(["---"] * len(cols)) + " |"
-
-lines = [header, sep]
-for _, row in df.iterrows():
-    vals = []
-    for c in cols:
-        v = row[c]
-        if c == 'mes_referencia':
-            vals.append(str(v))
-        else:
-            vals.append(f"{v:.6f}" if abs(v) < 0.01 else f"{v:.6f}")
-    lines.append("| " + " | ".join(vals) + " |")
-
-print("\n".join(lines))
-
-
-```
 
 ```text
 | mes_referencia | pix_quantidade_mi | pix_valor_bi | ted_quantidade_mi | ted_valor_bi | pix_ticket_medio_rs | ted_ticket_medio_rs |
