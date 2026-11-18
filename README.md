@@ -1,7 +1,28 @@
 # Trabalho Integrador – Pix e TED
 
-Relatório completo do trabalho disponível em [`RELATORIO.md`](RELATORIO.md).
+Código principal: [`trabalho_pix_ted.py`](trabalho_pix_ted.py)
 
-O documento descreve as oito etapas do processo: configuração, coleta nas APIs do Banco Central, classificação das bases, estruturação, diagnóstico, tratamento, integração, comparação ETL/ELT e visualização.
+Documento completo: [`RELATORIO.md`](RELATORIO.md)
 
-**Atenção metodológica:** antes de tratar os valores agregados do Pix como definitivos, verifique se as linhas retornadas pela API são categorias mutuamente exclusivas e se não há totais e subtotais simultâneos. O relatório explica essa validação.
+## Instalação
+
+```bash
+pip install -r requirements.txt
+```
+
+## Execução
+
+O código foi preparado para o ambiente `/content` do Google Colab. Para uso local, execute:
+
+```bash
+python trabalho_pix_ted.py
+```
+
+Por padrão, os dados brutos são gravados em `raw/` e os resultados em `saidas/`.
+
+## Saídas
+
+- `raw/pix_mensal/pix_AAAAMM.json.gz`
+- `raw/ted_bruto_<timestamp>.json.gz`
+- `saidas/pix_vs_ted_mensal_<timestamp>.csv`
+- `saidas/grafico_pix_vs_ted_<timestamp>.png`
