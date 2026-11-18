@@ -1166,6 +1166,10 @@ fig.savefig(OUT_DIR / "grafico_pix_ted.png", dpi=200, bbox_inches="tight")
 plt.show()
 ```
 
+<img width="1094" height="897" alt="image" src="https://github.com/user-attachments/assets/9f1d36fd-eee1-484e-b083-36dfc24119a3" />
+
+
+
 ### Interpretação
 
 **Guia para análise com base nos dados consolidados:**
