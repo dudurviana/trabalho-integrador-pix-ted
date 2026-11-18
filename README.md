@@ -996,5 +996,170 @@ ted_trat, log_ted = tratar(
 log_tratamentos = pd.concat([log_pix, log_ted], ignore_index=True)
 display(log_tratamentos)
 ```
-COLS_TED = {"mes": "AnoMes", "qtd": "quantidadeTED", "valor": "valorTED"}
+## Etapa 6 – Integração: Tabela Final Pix × TED
+
+```python
+final = pix_trat.merge(ted_trat, on="mes_referencia", how="inner", validate="one_to_one")
+final = final.sort_values("mes_referencia").reset_index(drop=True)
+
+# Indicador derivado: ticket médio (R$ por transação)
+final["pix_ticket_medio_rs"] = final["pix_valor_bi"] * 1e9 / (final["pix_quantidade_mi"] * 1e6)
+final["ted_ticket_medio_rs"] = final["ted_valor_bi"] * 1e9 / (final["ted_quantidade_mi"] * 1e6)
+
+print(f"Pix: {pix_trat['mes_referencia'].min():%Y-%m} a {pix_trat['mes_referencia'].max():%Y-%m} ({len(pix_trat)} meses)")
+print(f"TED: {ted_trat['mes_referencia'].min():%Y-%m} a {ted_trat['mes_referencia'].max():%Y-%m} ({len(ted_trat)} meses)")
+print(f"Final (interseção): {final['mes_referencia'].min():%Y-%m} a {final['mes_referencia'].max():%Y-%m} ({len(final)} meses)")
+
+esperado = pd.period_range(final["mes_referencia"].min(), final["mes_referencia"].max(), freq="M")
+print("Meses faltando dentro do intervalo comum:", len(esperado) - len(final))
+
+display(final.head())
+display(final.tail())
+display(final.describe().T)
+
+
+def periodicidade(serie_mes):
+    m = serie_mes.dropna().drop_duplicates().sort_values()
+    if len(m) < 2:
+        return "indeterminada"
+    meses = (m.dt.year * 12 + m.dt.month).diff().dropna()
+    return "mensal" if meses.median() == 1 else f"intervalo mediano de {meses.median():g} mês(es)"
+
+
+registro_variaveis = pd.DataFrame([
+    {
+        "base": "Pix",
+        "variaveis_usadas": f"{COLS_PIX['mes']}, {COLS_PIX['qtd']}, {COLS_PIX['valor']}",
+        "periodicidade_observada": periodicidade(pix_trat["mes_referencia"]),
+        "periodo": f"{pix_trat['mes_referencia'].min():%Y-%m} a {pix_trat['mes_referencia'].max():%Y-%m}",
+        "unidade_origem_assumida": f"qtd x{MULT_ORIGEM['pix']['qtd']:g} (unidades); valor x{MULT_ORIGEM['pix']['valor']:g} (R$)",
+    },
+    {
+        "base": "TED",
+        "variaveis_usadas": f"{COLS_TED['mes']}, {COLS_TED['qtd']}, {COLS_TED['valor']} (filtro {COL_INSTR} = {VALORES_TED})",
+        "periodicidade_observada": periodicidade(ted_trat["mes_referencia"]),
+        "periodo": f"{ted_trat['mes_referencia'].min():%Y-%m} a {ted_trat['mes_referencia'].max():%Y-%m}",
+        "unidade_origem_assumida": f"qtd x{MULT_ORIGEM['ted']['qtd']:g} (unidades); valor x{MULT_ORIGEM['ted']['valor']:g} (R$)",
+    },
+])
+display(registro_variaveis.T)
+```
+
+---
+
+## Etapa 7 – Diagnóstico de Qualidade DEPOIS do Tratamento
+
+```python
+diag_pix_depois = diagnosticar(
+    pix_trat,
+    "Pix",
+    "mes_referencia",
+    ["pix_quantidade_mi", "pix_valor_bi"],
+    fase="depois",
+    rotulos={"pix_quantidade_mi": "quantidade", "pix_valor_bi": "valor"},
+)
+
+diag_ted_depois = diagnosticar(
+    ted_trat,
+    "TED",
+    "mes_referencia",
+    ["ted_quantidade_mi", "ted_valor_bi"],
+    fase="depois",
+    rotulos={"ted_quantidade_mi": "quantidade", "ted_valor_bi": "valor"},
+)
+
+diag_final = diagnosticar(
+    final,
+    "Tabela final",
+    "mes_referencia",
+    ["pix_quantidade_mi", "pix_valor_bi", "ted_quantidade_mi", "ted_valor_bi"],
+    fase="depois",
+)
+
+
+def comparativo(antes, depois, base):
+    a = antes[["dimensao", "indicador", "valor"]].rename(columns={"valor": "antes"}).astype({"antes": "object"})
+    d = depois[["dimensao", "indicador", "valor"]].rename(columns={"valor": "depois"}).astype({"depois": "object"})
+    out = a.merge(d, on=["dimensao", "indicador"], how="outer", sort=False)
+    out.insert(0, "base", base)
+    return out
+
+
+comp_pix = comparativo(diag_pix_antes, diag_pix_depois, "Pix")
+comp_ted = comparativo(diag_ted_antes, diag_ted_depois, "TED")
+
+print("===== Comparativo Pix: antes x depois =====")
+display(comp_pix)
+
+print("===== Comparativo TED: antes x depois =====")
+display(comp_ted)
+
+print("===== Tabela final (depois) =====")
+display(diag_final.drop(columns=["base", "fase"]))
+```
+
+* **ETL ou ELT?** O processo aproxima-se de **ETL**, pois os dados são extraídos das APIs do Banco Central, transformados em memória com `pandas` (limpeza, tipagem, agregação mensal, padronização de unidades e junção) e exportados como saída final, guardando os `.json.gz` apenas como evidência bruta.
+
+---
+
+## Etapa 8 – Gráfico de Comparação
+
+```python
+LOG_QTD = True  # Altere para False caso prefira escala linear na quantidade
+
+try:
+    plt.style.use("seaborn-v0_8-whitegrid")
+except OSError:
+    plt.style.use("ggplot")
+
+x = final["mes_referencia"]
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 9), sharex=True)
+
+# Painel 1: Quantidade de transações (milhões)
+ax1.plot(x, final["pix_quantidade_mi"], color="#1b9e77", lw=2.2, label="Pix")
+ax1.plot(x, final["ted_quantidade_mi"], color="#d95f02", lw=2.2, label="TED")
+ax1.set_ylabel("Quantidade de transações por mês (milhões)" + (" – escala log" if LOG_QTD else ""))
+ax1.set_title("Quantidade mensal de transações")
+if LOG_QTD:
+    ax1.set_yscale("log")
+ax1.legend(title="Modalidade", loc="upper left")
+
+# Painel 2: Valor transacionado (R$ bilhões)
+ax2.plot(x, final["pix_valor_bi"], color="#1b9e77", lw=2.2, label="Pix")
+ax2.plot(x, final["ted_valor_bi"], color="#d95f02", lw=2.2, label="TED")
+ax2.set_ylabel("Valor transacionado por mês (R$ bilhões)")
+ax2.set_title("Valor mensal transacionado")
+ax2.set_xlabel("Mês de referência")
+ax2.legend(title="Modalidade", loc="upper left")
+ax2.xaxis.set_major_locator(mdates.YearLocator())
+ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+ax2.xaxis.set_minor_locator(mdates.MonthLocator(bymonth=(1, 4, 7, 10)))
+
+fig.suptitle(
+    "Pix x TED no Brasil: evolução mensal (" + f"{x.min():%m/%Y} a {x.max():%m/%Y})",
+    fontsize=14,
+    fontweight="bold",
+)
+fig.text(
+    0.01,
+    0.005,
+    "Fonte: Banco Central do Brasil – API de Dados Abertos (Pix_DadosAbertos e MPV_DadosAbertos). "
+    f"Coleta em {DATA_COLETA[:10]}. Elaboração própria.",
+    fontsize=8,
+    ha="left",
+    va="bottom",
+)
+fig.tight_layout(rect=(0, 0.02, 1, 0.97))
+fig.savefig(OUT_DIR / "grafico_pix_ted.png", dpi=200, bbox_inches="tight")
+plt.show()
+```
+
+### Interpretação e Limitações
+* **Quantidade:** O Pix cresce rapidamente desde o lançamento (`11/2020`) e amplia sua vantagem sobre a TED ao longo da série, atingindo cerca de `7.169,72` milhões de transações em `09/2026`.
+* **Valor e ticket médio:** Comparam-se `pix_valor_bi` e `ted_valor_bi` em conjunto com `pix_ticket_medio_rs` e `ted_ticket_medio_rs` para observar o perfil de uso de cada modalidade (conferindo a unidade original da TED no dicionário do BCB antes da redação final).
+* **Limitações:** Fontes e metodologias distintas, possível não inclusão de Pix liquidados internamente sem envio ao SPI, recorte da coluna de TED, valores nominais sem correção inflacionária, criação de novos usos pelo Pix e efeito visual da escala logarítmica.
+
+
+
+///COLS_TED = {"mes": "AnoMes", "qtd": "quantidadeTED", "valor": "valorTED"}
 COL_INSTR, VALORES_TED = "colunas quantidadeTED/valorTED (formato largo
