@@ -827,6 +827,18 @@ display(diag_ted_antes.drop(columns=["base", "fase"]))
 
 ## Etapa 5 – Tratamentos Aplicados e Justificativas
 
+Todas as alterações passam por um registro detalhado (indicando a ação executada, a justificativa e o total de linhas impactadas). Diretrizes centrais:
+
+* **Remoção de duplicatas idênticas antes de eliminar dimensões:** evita excluir registros válidos que só se distinguem por alguma categoria.
+* **Sem preenchimento de lacunas:** em dados financeiros, estimar ou inserir valores criaria informações fictícias. Os campos vazios permanecem como `NaN` e recebem marcação.
+* **Consolidação mensal via soma (reamostragem):** alinha as duas tabelas ao mesmo nível de detalhe (um registro por mês). Caso falte algum item daquele mês, o resultado vira `NaN` (somar apenas o que existe reduziria o total de forma silenciosa).
+* **Ajuste de escala:** volumes expressos em milhões de operações e montantes em bilhões de reais.
+* **Padronização de identificadores:** colunas no formato `snake_case`, sem acentuação e acompanhadas do prefixo correspondente à modalidade.
+
+> ⚠️ Caso a tabela contenha categorias adicionais (como pessoa física ou jurídica) e já inclua linhas consolidadas de total, somar tudo geraria contagem duplicada. O código emite um alerta sempre que houver mais de um registro por mês.
+>
+> 
+
 ```python
 def tratar(df_raw, cols, base, prefixo, mult_qtd, mult_valor, remover_duplicatas=True):
     """Aplica limpeza, tipagem, agregação mensal e padronização de unidades."""
