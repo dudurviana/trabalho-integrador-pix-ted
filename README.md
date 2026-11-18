@@ -1,6 +1,12 @@
 # Pipeline ETL: Pix vs. TED (Banco Central do Brasil)
 
 > Coleta, classificação, preparação e integração de dados públicos da API OData (Olinda) do Banco Central do Brasil para comparação histórica entre **Pix** e **TED**[cite: 1].
+>
+> Aluno: Eduardo Viana | RA: 2026110270| Professor: Prof. Me. Heron Bussolim Barbosa
+
+Como usar: Ambiente de execução > Executar tudo. O notebook baixa os dados do Banco Central por código (sem planilhas), trata, integra e gera o gráfico e o CSV final.
+
+Importante: as células marcadas com ⚠️ exigem que você confira o resultado na tela (nomes de colunas, unidades). Entenda cada bloco antes de entregar: o professor pode arguir qualquer etapa.
 
 ## Visão Geral do Fluxo
 
